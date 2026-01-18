@@ -302,6 +302,75 @@ def run_object_detection(image_bytes: bytes, object_name: str):
     return detections
 
 
+def draw_detections_on_image(image_bytes: bytes, detections: list) -> bytes:
+    """Draw bounding boxes and labels on image based on detections.
+    
+    Args:
+        image_bytes: Raw image bytes
+        detections: List of detection dictionaries with 'bbox_xyxy', 'class_name', 'confidence'
+    
+    Returns:
+        Annotated image as bytes
+    """
+    import cv2
+    import numpy as np
+    
+    # Convert bytes to NumPy array
+    image_array = np.frombuffer(image_bytes, np.uint8)
+    # Decode image using OpenCV
+    image = cv2.imdecode(image_array, cv2.IMREAD_COLOR)
+    
+    if image is None:
+        raise ValueError("Failed to decode image")
+    
+    annotated_image = image.copy()
+    
+    # Color palette for different classes
+    colors = [
+        (0, 255, 0),    # Green
+        (255, 0, 0),    # Blue
+        (0, 0, 255),    # Red
+        (255, 255, 0),  # Cyan
+        (255, 0, 255),  # Magenta
+        (0, 255, 255),  # Yellow
+    ]
+    
+    for detection in detections:
+        if 'bbox_xyxy' not in detection:
+            continue
+            
+        x1, y1, x2, y2 = detection['bbox_xyxy']
+        x1, y1, x2, y2 = int(x1), int(y1), int(x2), int(y2)
+        
+        # Ensure coordinates are within image bounds
+        h, w = image.shape[:2]
+        x1 = max(0, min(x1, w-1))
+        y1 = max(0, min(y1, h-1))
+        x2 = max(0, min(x2, w-1))
+        y2 = max(0, min(y2, h-1))
+        
+        class_name = detection.get('class_name', 'unknown')
+        confidence = detection.get('confidence', 0.0)
+        class_id = detection.get('class_id', 0)
+        
+        # Get color for this class
+        color = colors[class_id % len(colors)]
+        
+        # Draw bounding box
+        cv2.rectangle(annotated_image, (x1, y1), (x2, y2), color, 2)
+        
+        # Draw label background
+        label = f"{class_name}: {confidence:.2f}"
+        (label_w, label_h), baseline = cv2.getTextSize(label, cv2.FONT_HERSHEY_SIMPLEX, 0.5, 1)
+        cv2.rectangle(annotated_image, (x1, y1 - label_h - 10), 
+                     (x1 + label_w, y1), color, -1)
+        cv2.putText(annotated_image, label, (x1, y1 - 5),
+                   cv2.FONT_HERSHEY_SIMPLEX, 0.5, (255, 255, 255), 1)
+    
+    # Encode annotated image back to bytes
+    _, encoded_image = cv2.imencode('.jpg', annotated_image)
+    return encoded_image.tobytes()
+
 def recognize_text_openvino(image_bytes: bytes) -> dict:
     """
     Recognize text using OpenVINO text-recognition-0012 model.
