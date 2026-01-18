@@ -10,13 +10,14 @@ test-venv*/
 *.pt
 *.onnx
 
-# Exclude test model outputs but KEEP models/ directory
-tests/yolov8n_openvino_model/
+# Exclude entire test directory (not needed in production)
+tests/
+
+# Exclude docs and scripts (not needed in production)
+docs/
+scripts/
 
 # Test outputs and videos
-tests/output/
-tests/test_videos/
-tests/yolov8n_openvino_model/
 output/
 runs/
 
@@ -40,6 +41,8 @@ __pycache__/
 *.log
 .coverage
 .python-version
+*.md
+README.md
 
 # Keep model configs (small JSON/YAML files)
 !models/**/model.json
