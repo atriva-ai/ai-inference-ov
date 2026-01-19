@@ -25,6 +25,10 @@ ARCHITECTURE = "openvino"
 continuous_inference_tasks = {}
 inference_lock = Lock()
 
+# Track person trackers per camera (ByteTrack instances)
+person_trackers = {}
+tracker_lock = Lock()
+
 @router.get("/models")
 async def list_available_models():
     """Returns a list of all available models."""
@@ -395,9 +399,13 @@ async def stop_continuous_inference(camera_id: str):
         if camera_id in continuous_inference_tasks:
             continuous_inference_tasks[camera_id]["running"] = False
             del continuous_inference_tasks[camera_id]
-            return {"camera_id": camera_id, "status": "stopped"}
-        else:
-            return {"camera_id": camera_id, "status": "not_running"}
+    
+    # Reset tracker for this camera when inference stops
+    with tracker_lock:
+        if camera_id in person_trackers:
+            del person_trackers[camera_id]
+    
+    return {"camera_id": camera_id, "status": "stopped"}
 
 @router.get("/inference/continuous/status")
 async def get_continuous_inference_status(camera_id: str):
@@ -441,6 +449,7 @@ async def get_camera_latest_detections(camera_id: str):
     """Get the latest detection data with bounding boxes for a camera."""
     from app.models import ModelManager
     from app.services import preprocess_image, run_inference, postprocess_detections
+    from app.tracker import create_person_tracker
     
     # Get latest frame
     latest_frame = get_latest_frame(camera_id)
@@ -487,15 +496,109 @@ async def get_camera_latest_detections(camera_id: str):
             target_class_id = 0  # Person is class 0 in COCO dataset
             detections = [d for d in detections if d.get('class_id') == target_class_id]
         
-        # Format detections with bounding boxes
-        formatted_detections = []
-        for det in detections:
-            formatted_detections.append({
-                "class_id": det.get("class_id"),
-                "class_name": det.get("class_name"),
-                "confidence": det.get("confidence"),
-                "bbox": det.get("bbox_xyxy", [])  # [x1, y1, x2, y2] format
-            })
+        # Apply person tracking if object_filter is "person"
+        if object_filter == "person" and len(detections) > 0:
+            # Get or create tracker for this camera
+            with tracker_lock:
+                if camera_id not in person_trackers:
+                    person_trackers[camera_id] = create_person_tracker()
+                tracker = person_trackers[camera_id]
+            
+            # Convert detections to tracker format: [x, y, w, h] from [x1, y1, x2, y2]
+            tracker_detections = []
+            for det in detections:
+                bbox_xyxy = det.get("bbox_xyxy", [])
+                if len(bbox_xyxy) == 4:
+                    x1, y1, x2, y2 = bbox_xyxy
+                    tracker_detections.append({
+                        'bbox': [x1, y1, x2 - x1, y2 - y1],  # Convert to [x, y, w, h]
+                        'confidence': det.get("confidence", 0.0),
+                        'class_id': det.get("class_id", 0),
+                        'class_name': det.get("class_name", "person")
+                    })
+            
+            # Update tracker
+            tracked_results = tracker.update(tracker_detections)
+            
+            # Create mapping from detection to track_id using greedy matching
+            # Match each detection to the track with highest IoU (one-to-one)
+            detection_to_track = {}
+            used_track_ids = set()
+            
+            # Calculate IoU matrix
+            iou_matrix = []
+            for idx, det in enumerate(detections):
+                det_bbox = det.get("bbox_xyxy", [])
+                if len(det_bbox) != 4:
+                    iou_matrix.append({})
+                    continue
+                det_x1, det_y1, det_x2, det_y2 = det_bbox
+                det_area = (det_x2 - det_x1) * (det_y2 - det_y1)
+                
+                iou_row = {}
+                for track_id, track_info in tracked_results.items():
+                    track_bbox = track_info['bbox']  # [x, y, w, h]
+                    track_x1, track_y1 = track_bbox[0], track_bbox[1]
+                    track_x2, track_y2 = track_x1 + track_bbox[2], track_y1 + track_bbox[3]
+                    
+                    # Calculate IoU
+                    inter_x1 = max(track_x1, det_x1)
+                    inter_y1 = max(track_y1, det_y1)
+                    inter_x2 = min(track_x2, det_x2)
+                    inter_y2 = min(track_y2, det_y2)
+                    if inter_x2 > inter_x1 and inter_y2 > inter_y1:
+                        inter_area = (inter_x2 - inter_x1) * (inter_y2 - inter_y1)
+                        track_area = track_bbox[2] * track_bbox[3]
+                        union_area = track_area + det_area - inter_area
+                        iou = inter_area / union_area if union_area > 0 else 0.0
+                        if iou > 0.3:  # Minimum IoU threshold
+                            iou_row[track_id] = iou
+                iou_matrix.append(iou_row)
+            
+            # Greedy matching: assign each detection to best available track
+            for idx, iou_row in enumerate(iou_matrix):
+                if not iou_row:
+                    continue
+                # Find best track not yet used
+                best_track_id = None
+                best_iou = 0.0
+                for track_id, iou in iou_row.items():
+                    if track_id not in used_track_ids and iou > best_iou:
+                        best_iou = iou
+                        best_track_id = track_id
+                if best_track_id is not None:
+                    detection_to_track[idx] = best_track_id
+                    used_track_ids.add(best_track_id)
+            
+            # Format detections with tracking info
+            formatted_detections = []
+            current_timestamp = int(time.time())
+            for idx, det in enumerate(detections):
+                track_id = detection_to_track.get(idx)
+                formatted_detections.append({
+                    "camera_id": camera_id,
+                    "track_id": track_id,
+                    "bbox": det.get("bbox_xyxy", []),  # [x1, y1, x2, y2] format
+                    "timestamp": current_timestamp,
+                    # Additional fields for completeness
+                    "class_id": det.get("class_id"),
+                    "class_name": det.get("class_name"),
+                    "confidence": det.get("confidence")
+                })
+        else:
+            # No tracking - format detections without track_id
+            formatted_detections = []
+            current_timestamp = int(time.time())
+            for det in detections:
+                formatted_detections.append({
+                    "camera_id": camera_id,
+                    "bbox": det.get("bbox_xyxy", []),  # [x1, y1, x2, y2] format
+                    "timestamp": current_timestamp,
+                    # Additional fields for completeness
+                    "class_id": det.get("class_id"),
+                    "class_name": det.get("class_name"),
+                    "confidence": det.get("confidence")
+                })
         
         return {
             "camera_id": camera_id,
