@@ -254,12 +254,23 @@ async def start_background_inference(camera_id: str, model_name: str, accelerato
     }
 
 # --- Continuous Inference API ---
-def continuous_inference_worker(camera_id: str, model_name: str, accelerator: str, object_filter: Optional[str] = None):
-    """Continuous inference worker that processes new frames as they arrive."""
+def continuous_inference_worker(camera_id: str, model_name: str, accelerator: str, object_filter: Optional[str] = None, inference_fps: float = 5.0):
+    """Continuous inference worker that processes new frames as they arrive.
+    
+    Args:
+        camera_id: Camera ID to process frames for
+        model_name: Model to use for inference
+        accelerator: Hardware accelerator to use
+        object_filter: Filter detections by object type (e.g., "person")
+        inference_fps: Target inference rate in frames per second (default: 5.0)
+    """
     from app.models import ModelManager
     from app.services import preprocess_image, run_inference, postprocess_detections
     
-    print(f"🤖 Starting continuous inference for camera {camera_id} with model {model_name}")
+    # Calculate sleep interval based on FPS (e.g., 5 FPS = 0.2 seconds between inferences)
+    inference_interval = 1.0 / inference_fps if inference_fps > 0 else 1.0
+    
+    print(f"🤖 Starting continuous inference for camera {camera_id} with model {model_name} at {inference_fps} FPS (interval: {inference_interval:.2f}s)")
     
     try:
         manager = ModelManager(acceleration=accelerator)
@@ -298,19 +309,19 @@ def continuous_inference_worker(camera_id: str, model_name: str, accelerator: st
             # Get latest frame
             latest_frame = get_latest_frame(camera_id)
             if not latest_frame:
-                time.sleep(1)
+                time.sleep(inference_interval)
                 continue
             
             # Skip if we already processed this frame
             if latest_frame == last_processed_frame:
-                time.sleep(0.5)
+                time.sleep(inference_interval)
                 continue
             
             try:
                 # Read frame
                 frame_bytes = read_frame_file(latest_frame)
                 if not frame_bytes:
-                    time.sleep(0.5)
+                    time.sleep(inference_interval)
                     continue
                 
                 # Run inference
@@ -342,9 +353,10 @@ def continuous_inference_worker(camera_id: str, model_name: str, accelerator: st
                 
             except Exception as e:
                 print(f"❌ Error processing frame for camera {camera_id}: {e}")
-                time.sleep(1)
+                time.sleep(inference_interval)
             
-            time.sleep(0.5)  # Check for new frames every 0.5 seconds
+            # Sleep for the configured inference interval to maintain target FPS
+            time.sleep(inference_interval)
             
     except Exception as e:
         print(f"❌ Continuous inference error for camera {camera_id}: {e}")
@@ -358,13 +370,26 @@ async def start_continuous_inference(
     camera_id: str,
     model_name: str = "yolov8n",
     accelerator: Optional[str] = "cpu32",
-    object_filter: Optional[str] = "person"
+    object_filter: Optional[str] = "person",
+    inference_fps: Optional[float] = 5.0
 ):
-    """Start continuous inference for a camera."""
+    """Start continuous inference for a camera.
+    
+    Args:
+        camera_id: Camera ID to run inference on
+        model_name: Model to use for inference
+        accelerator: Hardware accelerator to use
+        object_filter: Filter detections by object type (e.g., "person")
+        inference_fps: Target inference rate in frames per second (default: 5.0)
+    """
     if accelerator not in ACCELERATORS:
         raise HTTPException(status_code=400, detail=f"Unsupported accelerator: {accelerator}")
     if model_name not in MODEL_NAME_MAPPING:
         raise HTTPException(status_code=400, detail=f"Unknown model: {model_name}")
+    
+    # Validate FPS
+    if inference_fps is not None and (inference_fps <= 0 or inference_fps > 30):
+        raise HTTPException(status_code=400, detail=f"Invalid inference_fps: {inference_fps}. Must be between 0 and 30")
     
     with inference_lock:
         if camera_id in continuous_inference_tasks and continuous_inference_tasks[camera_id].get("running", False):
@@ -378,10 +403,11 @@ async def start_continuous_inference(
             "running": True,
             "model_name": model_name,
             "accelerator": accelerator,
-            "object_filter": object_filter
+            "object_filter": object_filter,
+            "inference_fps": inference_fps or 5.0
         }
     
-    thread = Thread(target=continuous_inference_worker, args=(camera_id, model_name, accelerator, object_filter), daemon=True)
+    thread = Thread(target=continuous_inference_worker, args=(camera_id, model_name, accelerator, object_filter, inference_fps or 5.0), daemon=True)
     thread.start()
     
     return {
@@ -389,6 +415,7 @@ async def start_continuous_inference(
         "model_name": model_name,
         "accelerator": accelerator,
         "object_filter": object_filter,
+        "inference_fps": inference_fps or 5.0,
         "status": "started"
     }
 
