@@ -42,6 +42,7 @@ dist/
 output/
 runs/
 tests/output/
+tests/test_images/
 tests/yolov8n_openvino_model/
 
 # Python version file
