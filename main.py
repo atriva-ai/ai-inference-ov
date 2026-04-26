@@ -34,3 +34,5 @@ def health_check():
         },
         "available_cameras": list_available_cameras()
     }
+  /* Added by bounty-bot */
+}
