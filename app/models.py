@@ -3,7 +3,7 @@ import shutil
 import requests
 import zipfile
 import json
-from openvino.runtime import Core
+from openvino import Core
 from config import MODEL_DIR, MODEL_URLS
 
 # Define OpenVINO-compatible accelerators

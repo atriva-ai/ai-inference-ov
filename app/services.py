@@ -1,7 +1,6 @@
 import numpy as np
 import cv2
-# from openvino import AsyncInferQueue
-from openvino.runtime import InferRequest
+from openvino import AsyncInferQueue, InferRequest
 from app.models import model_manager
 
 def letterbox(img, new_shape=(640,640), color=(114,114,114)):
