@@ -18,7 +18,7 @@ import argparse
 import cv2
 import numpy as np
 from pathlib import Path
-from openvino.runtime import Core
+from openvino import Core
 from rich.console import Console
 from rich.progress import Progress, BarColumn, TextColumn, TimeElapsedColumn
 import time

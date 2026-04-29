@@ -23,7 +23,7 @@ from pathlib import Path
 from typing import Dict, List, Optional
 import cv2
 import numpy as np
-from openvino.runtime import Core
+from openvino import Core
 import requests
 import yaml
 from tqdm import tqdm
