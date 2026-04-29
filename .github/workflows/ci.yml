@@ -1,0 +1,43 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+
+jobs:
+  build-and-test:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Build Docker image
+        run: docker build -t ai-inference-ov .
+
+      - name: Start container
+        run: |
+          docker run -d \
+            --name ai-inference \
+            -p 8001:8001 \
+            ai-inference-ov
+
+      - name: Wait for service to be healthy
+        run: |
+          echo "Waiting for AI inference service..."
+          timeout 60 bash -c \
+            'until curl -sf http://localhost:8001/health; do sleep 2; done'
+
+      - name: Assert health endpoint returns 200
+        run: |
+          curl -sf http://localhost:8001/health | grep '"status"'
+
+      - name: Assert models list is accessible
+        run: |
+          curl -sf http://localhost:8001/models
+
+      - name: Print container logs on failure
+        if: failure()
+        run: docker logs ai-inference
